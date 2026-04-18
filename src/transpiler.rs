@@ -142,5 +142,11 @@ fn transpile_statement(stmt: &Statement, indent: usize) -> String {
             format!("{} as {}", transpile_expr(expr, indent), transpile_type(typ))
         }
         Statement::Clone(e) => format!("{}.clone()", transpile_expr(e, indent)),
+        Statement::Expr(Expression::Vec(elements)) => {
+            let elements_str: Vec<String> = elements.iter()
+                .map(|e| transpile_expr(e, indent))
+                .collect();
+            format!("vec![{}]", elements_str.join(", "))
+        },
     }
 }

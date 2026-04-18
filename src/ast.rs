@@ -67,12 +67,6 @@ pub enum Statement {
     },
     Expr(Box<Expression>),
 
-    Try(Box<Expression>),
-    Cast { 
-        expr: Box<Expression>, 
-        typ: Type 
-    },
-    Clone(Box<Expression>),
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +95,10 @@ pub enum Type {
     U8,
     String,
     Vec(Box<Type>),
+    Vec(Vec<Expression>),
+    Try(Box<Expression>),
+    Cast { expr: Box<Expression>, typ: Type },
+    Clone(Box<Expression>),
     HashMap(Box<Type>, Box<Type>),
     UserDefined(String),
     Result(Box<Type>, Box<Type>),
