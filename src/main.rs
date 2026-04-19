@@ -54,15 +54,34 @@ fn convert_dim(line: &str) -> String {
     let parts: Vec<&str> = line[4..].split_whitespace().collect();
     if parts.len() >= 3 && parts[1] == "As" {
         let var_name = parts[0];
-        let var_type = parts[2];
-        let rust_type = match var_type {
-            "Integer" => "i32",
-            "Long" => "i32",
-            "Double" => "f64",
-            "Boolean" => "bool",
-            "String" => "String",
-            "Byte" => "u8",
-            _ => var_type,
+        let type_parts_start = 2;
+        let var_type = parts[type_parts_start..].join(" ");
+        let rust_type = if var_type.starts_with('(') && var_type.ends_with(')') {
+            let inner = &var_type[1..var_type.len()-1];
+            let types: Vec<&str> = inner.split(',').collect();
+            let rust_types: Vec<&str> = types.iter().map(|t| {
+                match t.trim() {
+                    "Integer" => "i32",
+                    "Long" => "i32",
+                    "Double" => "f64",
+                    "Boolean" => "bool",
+                    "String" => "String",
+                    "Byte" => "u8",
+                    _ => t.trim(),
+                }
+            }).collect();
+            format!("({})", rust_types.join(", "))
+        } else {
+            let rust_type = match var_type.as_str() {
+                "Integer" => "i32",
+                "Long" => "i32",
+                "Double" => "f64",
+                "Boolean" => "bool",
+                "String" => "String",
+                "Byte" => "u8",
+                _ => var_type.as_str(),
+            };
+            format!("{}", rust_type)
         };
         format!("let {}: {};", var_name, rust_type)
     } else {

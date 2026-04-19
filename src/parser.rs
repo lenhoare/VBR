@@ -66,31 +66,6 @@ impl Parser {
             Token::Boolean => Type::Bool,
             Token::Byte => Type::U8,
             Token::StringType => Type::String,
-            Token::HashMap => {
-                self.advance();
-                self.expect(Token::LParen)?;
-                let key = Box::new(self.parse_prim_type()?);
-                self.expect(Token::Comma)?;
-                let value = Box::new(self.parse_prim_type()?);
-                self.expect(Token::RParen)?;
-                Type::HashMap(key, value)
-            }
-            Token::Vec => {
-                self.advance();
-                self.expect(Token::LParen)?;
-                let inner = Box::new(self.parse_prim_type()?);
-                self.expect(Token::RParen)?;
-                Type::Vec(inner)
-            }
-            Token::Ident(ref name) if name == "Result" => {
-                self.advance();
-                self.expect(Token::LParen)?;
-                let ok_type = Box::new(self.parse_prim_type()?);
-                self.expect(Token::Comma)?;
-                let err_type = Box::new(self.parse_prim_type()?);
-                self.expect(Token::RParen)?;
-                Type::Result(ok_type, err_type)
-            }
             Token::Ident(ref name) => {
                 let name = name.clone();
                 self.advance();
@@ -121,7 +96,7 @@ impl Parser {
             Token::If => self.parse_if(),
             Token::Select => self.parse_select(),
             Token::For => self.parse_for(),
-            Token::New => self.parse_new(),
+//             Token::New => self.parse_new(),
             Token::ForEach => self.parse_for_each(),
             Token::While => self.parse_while(),
             Token::Do => self.parse_do_while(),
@@ -300,35 +275,20 @@ impl Parser {
         let body = self.parse_block()?;
         Ok(Statement::ForEach { variable, collection, body })
 
-    fn parse_new(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // New
-        self.expect(Token::As)?;
-        let typ = self.parse_prim_type()?;
-        let inner = match typ {
-            Type::Vec(inner) => *inner,
-            _ => return Err(ParseError { message: format!("Expected Vec type, found {:?}", typ), line: 0 }),
-        };
-        let init = if self.current() == &Token::LParen {
-            let elements = self.parse_vec_init()?;
-            Some(Box::new(Expression::Vec(elements)))
-        } else { None };
-        self.expect_semicolon()?;
-        Ok(Statement::Dim { mutable: true, typ: Type::Vec(Box::new(inner)), name: "vec_var".to_string(), init })
-    }
-
-    fn parse_vec_init(&mut self) -> Result<std::vec::std::vec::Vec<Expression>>, ParseError> {
-        self.expect(Token::LParen)?;
-        let mut elements = Vec::new();
-        if self.current() != &Token::RParen {
-            elements.push(self.parse_expr()?);
-            while self.current() == &Token::Comma {
-                self.advance();
-                elements.push(self.parse_expr()?);
-            }
-        }
-        self.expect(Token::RParen)?;
-        Ok(elements)
-    }
+//     fn parse_new(&mut self) -> Result<Statement, ParseError> {
+//         self.advance(); // New
+//         self.expect(Token::As)?;
+//         let typ = self.parse_prim_type()?;
+//         let inner = match typ {
+//             _ => return Err(ParseError { message: format!("Expected Vec type, found {:?}", typ), line: 0 }),
+//             while self.current() == &Token::Comma {
+//                 self.advance();
+//                 elements.push(self.parse_expr()?);
+//             }
+//         }
+//         self.expect(Token::RParen)?;
+//         Ok(elements)
+//     }
 
 
     }
@@ -381,7 +341,7 @@ impl Parser {
         })
     }
 
-    fn parse_param(&mut self) -> Result<Param, ParseError> {
+    pub fn parse_param(&mut self) -> Result<Param, ParseError> {
         let mut by_ref = false;
         let mut mut_ = false;
         if self.current() == &Token::ByRef {

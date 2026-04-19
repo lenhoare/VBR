@@ -70,6 +70,7 @@ pub enum Statement {
 }
 
 #[derive(Debug, Clone)]
+#[doc(hidden)]
 pub enum SelectArm {
     Value { value: Expression, body: Vec<Statement> },
     Range { start: Expression, end: Expression, body: Vec<Statement> },
@@ -94,14 +95,7 @@ pub enum Type {
     Bool,
     U8,
     String,
-    Vec(Box<Type>),
-    Vec(Vec<Expression>),
-    Try(Box<Expression>),
-    Cast { expr: Box<Expression>, typ: Type },
-    Clone(Box<Expression>),
-    HashMap(Box<Type>, Box<Type>),
     UserDefined(String),
-    Result(Box<Type>, Box<Type>),
 }
 
 #[derive(Debug, Clone)]
@@ -137,12 +131,10 @@ pub enum Expression {
         value: Box<Expression>, 
         arms: Vec<MatchArm>,
     },
-    Try(Box<Expression>),
     Cast { 
         expr: Box<Expression>, 
         typ: Type 
     },
-    Clone(Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
