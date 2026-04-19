@@ -125,7 +125,11 @@ fn transpile_iterator_method(func: &Expression, args: &[Expression], indent: usi
     let receiver = transpile_expr(&func.object, indent);
     let args_str: Vec<String> = args.iter().map(|e| transpile_expr(e, indent)).collect();
     match method_name.as_str() {
-        "filter" => format!("{}filter(|x| {})", receiver, args_str[0]),
+        "filter" => {
+            // HashMap filter receives (key, value) tuple
+            // args[0] is the pattern like "(_, v)" or "(k, _)"
+            format!("{}filter({})", receiver, args_str[0])
+        },
         "map" => format!("{}map(|x| {})", receiver, args_str[0]),
         "any" => format!("{}any(|x| {})", receiver, args_str[0]),
         "all" => format!("{}all(|x| {})", receiver, args_str[0]),
