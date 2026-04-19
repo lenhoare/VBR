@@ -117,6 +117,23 @@ fn transpile_statement(stmt: &Statement, indent: usize) -> String {
                 .join(", ");
             let mut output = format!("fn {}({}){}{} {{\n", name, param_str, return_str, indent_str);
             for stmt in body {
+fn transpile_iterator_method(func: &Expression, args: &[Expression], indent: usize) -> String {
+    let method_name = match func {
+        Expression::FieldAccess { field, .. } => field,
+        _ => "",
+    };
+    let receiver = transpile_expr(&func.object, indent);
+    let args_str: Vec<String> = args.iter().map(|e| transpile_expr(e, indent)).collect();
+    match method_name.as_str() {
+        "filter" => format!("{}filter(|x| {})", receiver, args_str[0]),
+        "map" => format!("{}map(|x| {})", receiver, args_str[0]),
+        "any" => format!("{}any(|x| {})", receiver, args_str[0]),
+        "all" => format!("{}all(|x| {})", receiver, args_str[0]),
+        "first" => format!("{}.first()", receiver),
+        "last" => format!("{}.last()", receiver),
+        _ => format!("{}.{}({})", receiver, method_name, args_str.join(", ")),
+    }
+}
                 output.push_str(&transpile_statement(stmt, indent + 1));
                 output.push('\n');
             }
@@ -142,6 +159,37 @@ fn transpile_statement(stmt: &Statement, indent: usize) -> String {
             format!("{} as {}", transpile_expr(expr, indent), transpile_type(typ))
         }
         Statement::Clone(e) => format!("{}.clone()", transpile_expr(e, indent)),
+        Statement::Call(e) => {
+            match &**e.function {
+                Expression::FieldAccess { field, .. } if field == "filter" => {
+                    let obj = &e.function;
+                    let args_str: Vec<String> = e.args.iter().map(|a| transpile_expr(a, indent)).collect();
+                    format!("{}filter(|x| {})", transpile_expr(obj, indent), args_str[0])
+                }
+                Expression::FieldAccess { field, .. } if field == "map" => {
+                    let obj = &e.function;
+                    let args_str: Vec<String> = e.args.iter().map(|a| transpile_expr(a, indent)).collect();
+                    format!("{}map(|x| {})", transpile_expr(obj, indent), args_str[0])
+                }
+                Expression::FieldAccess { field, .. } if field == "any" => {
+                    let obj = &e.function;
+                    let args_str: Vec<String> = e.args.iter().map(|a| transpile_expr(a, indent)).collect();
+                    format!("{}any(|x| {})", transpile_expr(obj, indent), args_str[0])
+                }
+                Expression::FieldAccess { field, .. } if field == "all" => {
+                    let obj = &e.function;
+                    let args_str: Vec<String> = e.args.iter().map(|a| transpile_expr(a, indent)).collect();
+                    format!("{}all(|x| {})", transpile_expr(obj, indent), args_str[0])
+                }
+                Expression::FieldAccess { field, .. } if field == "first" => {
+                    format!("{}.first()", transpile_expr(&e.function, indent))
+                }
+                Expression::FieldAccess { field, .. } if field == "last" => {
+                    format!("{}.last()", transpile_expr(&e.function, indent))
+                }
+                _ => format!("{}.apply({})", indent_str, transpile_expr(&e.function, indent)),
+            }
+        },
         // Statement::Expr(Expression::Vec) removed
     }
 }

@@ -515,10 +515,28 @@ impl Parser {
                             Token::Ident(f) => { let f = f.clone(); self.advance(); f },
                             _ => return Err(ParseError { message: format!("Expected field name, found {:?}", self.current()), line: 0 }),
                         };
-                        Ok(Expression::FieldAccess {
+                        let field_access = Expression::FieldAccess {
                             object: Box::new(Expression::Ident(name)),
                             field,
-                        })
+                        };
+                        // Handle method calls like (expr).method(args)
+                        if self.current() == &Token::LParen {
+                            let mut args = Vec::new();
+                            self.advance(); // consume (
+                            while self.current() != &Token::RParen {
+                                args.push(self.parse_expr()?);
+                                if self.current() == &Token::Comma {
+                                    self.advance();
+                                }
+                            }
+                            self.expect(Token::RParen)?;
+                            Ok(Expression::Call {
+                                function: Box::new(field_access),
+                                args,
+                            })
+                        } else {
+                            Ok(field_access)
+                        }
                     } else {
                         Ok(Expression::Ident(name))
                     }
