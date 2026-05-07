@@ -19,7 +19,7 @@ use cursive::{
     views::{
         Button, Checkbox, Dialog, DummyView, LinearLayout,
         Panel, ResizedView, ScrollView, SelectView, TextView,
-        EditView,
+        EditView, TextArea,
     },
     traits::{Nameable, Resizable},
 };
@@ -43,6 +43,8 @@ struct AppState {
     data: Arc<Mutex<dyn FormData>>,
     /// Bindings for views that need refreshing after any event
     refresh_targets: Vec<(String, DisplayKind)>,
+    /// Bindings for TextArea widgets — synced into data before every button dispatch
+    textarea_bindings: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -62,10 +64,12 @@ impl FormBackend for CursiveBackend {
 
         // Collect display-only bindings before building the layout
         let refresh_targets = collect_refresh_targets(&def.controls);
+        let textarea_bindings = collect_textarea_bindings(&def.controls);
 
         let state = AppState {
             data: Arc::clone(&data),
             refresh_targets,
+            textarea_bindings,
         };
         siv.set_user_data(state);
 
@@ -111,6 +115,44 @@ fn collect_refresh_targets(controls: &[Control]) -> Vec<(String, DisplayKind)> {
         }
     }
     targets
+}
+
+// ---------------------------------------------------------------------------
+// Collect multi-line TextArea bindings
+// ---------------------------------------------------------------------------
+
+fn collect_textarea_bindings(controls: &[Control]) -> Vec<String> {
+    let mut bindings = Vec::new();
+    for control in controls {
+        match control {
+            Control::TextBox(def) if def.multi_line => {
+                bindings.push(def.binding.clone());
+            }
+            Control::Group(def) => {
+                bindings.extend(collect_textarea_bindings(&def.controls));
+            }
+            _ => {}
+        }
+    }
+    bindings
+}
+
+/// Flush every TextArea's current content into the FormData struct.
+/// Called before any button dispatch so handlers see up-to-date values.
+fn sync_textarea_bindings(siv: &mut Cursive) {
+    let bindings: Vec<String> = match siv.user_data::<AppState>() {
+        Some(s) => s.textarea_bindings.clone(),
+        None => return,
+    };
+    for binding in bindings {
+        if let Some(content) = siv.call_on_name(&binding, |ta: &mut TextArea| {
+            ta.get_content().to_string()
+        }) {
+            if let Some(state) = siv.user_data::<AppState>() {
+                state.data.lock().unwrap().set(&binding, FieldValue::Text(content));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,12 +238,6 @@ fn build_controls(
             }
 
             Control::TextBox(def) => {
-                let d = Arc::clone(&data);
-                let e = Arc::clone(&events);
-                let binding = def.binding.clone();
-                let on_change = def.on_change.clone();
-                let max_length = def.max_length;
-
                 let initial = {
                     let guard = data.lock().unwrap();
                     match guard.get(&def.binding) {
@@ -210,33 +246,50 @@ fn build_controls(
                     }
                 };
 
-                let mut edit = EditView::new().content(initial);
+                if def.multi_line {
+                    let height = def.view_height.unwrap_or(5) as usize;
+                    let area = TextArea::new()
+                        .content(initial)
+                        .with_name(&def.binding)
+                        .full_width()
+                        .fixed_height(height);
 
-                if let Some(max) = max_length {
-                    edit.set_max_content_width(Some(max as usize));
-                }
+                    let section = LinearLayout::vertical()
+                        .child(TextView::new(&def.label))
+                        .child(area);
+                    layout.add_child(section);
+                } else {
+                    let d = Arc::clone(&data);
+                    let e = Arc::clone(&events);
+                    let binding = def.binding.clone();
+                    let on_change = def.on_change.clone();
 
-                let edit = edit
-                    .on_edit(move |siv, text, _| {
-                        let value = FieldValue::Text(text.to_string());
-                        d.lock().unwrap().set(&binding, value.clone());
-                        if let Some(ref h) = on_change {
-                            let action = e.lock().unwrap().dispatch(h, value);
-                            if matches!(action, Action::Quit) {
-                                siv.quit();
-                                return;
+                    let mut edit = EditView::new().content(initial);
+                    if let Some(max) = def.max_length {
+                        edit.set_max_content_width(Some(max as usize));
+                    }
+
+                    let edit = edit
+                        .on_edit(move |siv, text, _| {
+                            let value = FieldValue::Text(text.to_string());
+                            d.lock().unwrap().set(&binding, value.clone());
+                            if let Some(ref h) = on_change {
+                                let action = e.lock().unwrap().dispatch(h, value);
+                                if matches!(action, Action::Quit) {
+                                    siv.quit();
+                                    return;
+                                }
                             }
-                        }
-                        refresh_display_views(siv);
-                    })
-                    .with_name(&def.binding)
-                    .full_width();
+                            refresh_display_views(siv);
+                        })
+                        .with_name(&def.binding)
+                        .full_width();
 
-                let row = LinearLayout::horizontal()
-                    .child(label_cell(&def.label))
-                    .child(edit);
-
-                layout.add_child(row);
+                    let row = LinearLayout::horizontal()
+                        .child(label_cell(&def.label))
+                        .child(edit);
+                    layout.add_child(row);
+                }
             }
 
             Control::NumberBox(def) => {
@@ -420,6 +473,7 @@ fn build_controls(
                 let handler = def.on_click.clone();
 
                 let btn = Button::new(&def.text, move |siv| {
+                    sync_textarea_bindings(siv);
                     let action = e.lock().unwrap().dispatch(&handler, FieldValue::Text(String::new()));
                     if matches!(action, Action::Quit) {
                         siv.quit();
@@ -440,6 +494,7 @@ fn build_controls(
                     let handler = btn_def.on_click.clone();
 
                     let btn = Button::new(&btn_def.text, move |siv| {
+                        sync_textarea_bindings(siv);
                         let action = e.lock().unwrap().dispatch(&handler, FieldValue::Text(String::new()));
                         if matches!(action, Action::Quit) {
                             siv.quit();

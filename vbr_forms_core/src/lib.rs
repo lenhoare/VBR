@@ -81,6 +81,8 @@ pub struct TextBoxDef {
     pub placeholder: Option<String>,
     pub max_length: Option<u32>,
     pub on_change: Option<String>,
+    pub multi_line: bool,
+    pub view_height: Option<u32>,
 }
 
 impl TextBoxDef {
@@ -91,11 +93,15 @@ impl TextBoxDef {
             placeholder: None,
             max_length: None,
             on_change: None,
+            multi_line: false,
+            view_height: None,
         }
     }
     pub fn placeholder(mut self, p: impl Into<String>) -> Self { self.placeholder = Some(p.into()); self }
     pub fn max_length(mut self, n: u32) -> Self { self.max_length = Some(n); self }
     pub fn on_change(mut self, h: impl Into<String>) -> Self { self.on_change = Some(h.into()); self }
+    pub fn multi_line(mut self, v: bool) -> Self { self.multi_line = v; self }
+    pub fn view_height(mut self, n: u32) -> Self { self.view_height = Some(n); self }
 }
 
 #[derive(Debug, Clone)]

@@ -53,6 +53,10 @@ pub struct ParsedControl {
     pub placeholder: Option<String>,
     /// MaxLength := n
     pub max_length: Option<u32>,
+    /// MultiLine := True
+    pub multi_line: bool,
+    /// ViewHeight := n
+    pub view_height: Option<u32>,
     /// Min := n
     pub min: Option<f64>,
     /// Max := n
@@ -80,6 +84,8 @@ impl ParsedControl {
             binding: None,
             placeholder: None,
             max_length: None,
+            multi_line: false,
+            view_height: None,
             min: None,
             max: None,
             is_int: true,
@@ -102,6 +108,8 @@ impl ParsedControl {
             "Binding"     => self.binding  = Some(value.to_string()),
             "Placeholder" => self.placeholder = Some(stripped),
             "MaxLength"   => { if let Ok(n) = value.parse::<u32>() { self.max_length = Some(n); } }
+            "MultiLine"   => { self.multi_line = value.eq_ignore_ascii_case("true"); }
+            "ViewHeight"  => { if let Ok(n) = value.parse::<u32>() { self.view_height = Some(n); } }
             "Min" => {
                 if let Ok(n) = value.parse::<f64>() {
                     self.min = Some(n);
@@ -733,7 +741,7 @@ pub fn transpile_form_file(input: &str) -> Result<String, String> {
         }
 
         if let Some(vbr_fn) = fn_map.get(h.vbr_name.as_str()) {
-            let body = transpile_fn_body(&vbr_fn.body_lines, &meta.bindings);
+            let body = transpile_fn_body(&vbr_fn.body_lines, &meta.bindings, h.value_kind.as_ref());
             if body.is_empty() {
                 out.push_str("    // TODO: implement\n");
             } else {
@@ -807,8 +815,16 @@ fn emit_control(out: &mut String, ctrl: &ParsedControl, depth: usize) {
             if let Some(n) = ctrl.max_length {
                 suffix.push_str(&format!(".max_length({})", n));
             }
+            if ctrl.multi_line {
+                suffix.push_str(".multi_line(true)");
+            }
+            if let Some(n) = ctrl.view_height {
+                suffix.push_str(&format!(".view_height({})", n));
+            }
             if let Some(ref h) = ctrl.on_change {
-                suffix.push_str(&format!(".on_change(\"{}\")", h));
+                if !ctrl.multi_line {
+                    suffix.push_str(&format!(".on_change(\"{}\")", h));
+                }
             }
             out.push_str(&format!(
                 "{}.add(Control::TextBox(TextBoxDef::new(\"{}\", \"{}\"){}))\n",
@@ -933,7 +949,7 @@ fn emit_control(out: &mut String, ctrl: &ParsedControl, depth: usize) {
 // Function body transpiler — simple, binding-aware
 // ---------------------------------------------------------------------------
 
-fn transpile_fn_body(lines: &[String], bindings: &[BindingInfo]) -> String {
+fn transpile_fn_body(lines: &[String], bindings: &[BindingInfo], value_kind: Option<&BindingKind>) -> String {
     let mut out = String::new();
     let mut if_depth = 0usize;
 
@@ -966,7 +982,8 @@ fn transpile_fn_body(lines: &[String], bindings: &[BindingInfo]) -> String {
         // If ... Then
         if trimmed.to_lowercase().starts_with("if ") {
             if let Some(cond) = extract_if_condition(trimmed) {
-                out.push_str(&format!("{}if {} {{\n", indent, transpile_expr_simple(&cond)));
+                let cond_rust = bool_coerce_expr(&cond, bindings, value_kind);
+                out.push_str(&format!("{}if {} {{\n", indent, cond_rust));
                 if_depth += 1;
                 continue;
             }
@@ -981,7 +998,7 @@ fn transpile_fn_body(lines: &[String], bindings: &[BindingInfo]) -> String {
         // Assignment: binding = value  OR  binding = string & other
         if let Some((lhs, rhs)) = split_assignment(trimmed) {
             if let Some(binding) = bindings.iter().find(|b| b.camel == lhs) {
-                let rhs_rust = transpile_rhs(&rhs, binding);
+                let rhs_rust = transpile_rhs(&rhs, binding, bindings);
                 out.push_str(&format!("{}data.{} = {};\n", indent, binding.snake, rhs_rust));
                 continue;
             }
@@ -992,6 +1009,31 @@ fn transpile_fn_body(lines: &[String], bindings: &[BindingInfo]) -> String {
     }
 
     out
+}
+
+/// Coerce a VBR boolean-context expression to valid Rust.
+/// VBA treats non-empty strings and non-zero numbers as truthy.
+fn bool_coerce_expr(expr: &str, bindings: &[BindingInfo], value_kind: Option<&BindingKind>) -> String {
+    let e = expr.trim();
+    // Single bare identifier (no operators, parens, spaces)
+    if !e.is_empty() && e.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        if e == "value" {
+            return match value_kind {
+                Some(BindingKind::Text)    => "!value.is_empty()".to_string(),
+                Some(BindingKind::NumberInt | BindingKind::NumberFloat) => "value != 0".to_string(),
+                _ => e.to_string(),
+            };
+        }
+        if let Some(b) = bindings.iter().find(|b| b.camel == e || b.snake == e) {
+            return match b.kind {
+                BindingKind::Text        => format!("!data.{}.is_empty()", b.snake),
+                BindingKind::NumberInt
+                | BindingKind::NumberFloat => format!("data.{} != 0", b.snake),
+                _ => format!("data.{}", b.snake),
+            };
+        }
+    }
+    transpile_expr_simple(expr)
 }
 
 fn extract_if_condition(line: &str) -> Option<String> {
@@ -1016,14 +1058,22 @@ fn split_assignment(line: &str) -> Option<(String, String)> {
     Some((lhs, rhs))
 }
 
-fn transpile_rhs(rhs: &str, binding: &BindingInfo) -> String {
+fn transpile_rhs(rhs: &str, binding: &BindingInfo, bindings: &[BindingInfo]) -> String {
     let rhs = rhs.trim();
     // String concatenation with &
     if rhs.contains(" & ") {
         let parts: Vec<&str> = rhs.split(" & ").collect();
         let fmt = "{}".repeat(parts.len());
         let args: String = parts.iter()
-            .map(|p| format!(", {}", p.trim()))
+            .map(|p| {
+                let p = p.trim();
+                // Substitute binding camelCase names with data.snake_name
+                if let Some(b) = bindings.iter().find(|b| b.camel == p) {
+                    format!(", data.{}", b.snake)
+                } else {
+                    format!(", {}", p)
+                }
+            })
             .collect();
         return format!("format!(\"{}\"{})", fmt, args);
     }
