@@ -4,6 +4,50 @@ pub struct Program {
 }
 
 #[derive(Debug, Clone)]
+pub enum Pattern {
+    Literal(Expression),
+    Wildcard,
+    Variable(String),
+    Tuple(Vec<Pattern>),
+    Struct { name: String, fields: Vec<(String, Pattern)> },
+}
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Pattern::Literal(a), Pattern::Literal(b)) => a == b,
+            (Pattern::Wildcard, Pattern::Wildcard) => true,
+            (Pattern::Variable(a), Pattern::Variable(b)) => a == b,
+            (Pattern::Tuple(a), Pattern::Tuple(b)) => a == b,
+            (Pattern::Struct { name: an, fields: af }, Pattern::Struct { name: bn, fields: bf }) => an == bn && af == bf,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for Expression {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Expression::Integer(a), Expression::Integer(b)) => a == b,
+            (Expression::Float(a), Expression::Float(b)) => a == b,
+            (Expression::Boolean(a), Expression::Boolean(b)) => a == b,
+            (Expression::StringLiteral(a), Expression::StringLiteral(b)) => a == b,
+            (Expression::Nothing, Expression::Nothing) => true,
+            (Expression::Null, Expression::Null) => true,
+            (Expression::Ident(a), Expression::Ident(b)) => a == b,
+            (Expression::Call { function: a, args: av }, Expression::Call { function: b, args: bv }) => a == b && av == bv,
+            (Expression::Unary { op: ao, expr: ae }, Expression::Unary { op: bo, expr: be }) => ao == bo && ae == be,
+            (Expression::Binary { left: al, op: ao, right: ar }, Expression::Binary { left: bl, op: bo, right: br }) => ao == bo && al == bl && ar == br,
+            (Expression::Index { collection: ac, index: ai }, Expression::Index { collection: bc, index: bi }) => ac == bc && ai == bi,
+            (Expression::FieldAccess { object: ao, field: af }, Expression::FieldAccess { object: bo, field: bf }) => af == bf && ao == bo,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Expression {}
+
+#[derive(Debug, Clone)]
 pub enum Statement {
     Dim { 
         mutable: bool, 
@@ -167,6 +211,7 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone)]
 pub struct MatchArm {
-    pub pattern: Expression,
+    pub pattern: Pattern,
+    pub guard: Option<Box<Expression>>,
     pub body: Vec<Statement>,
 }

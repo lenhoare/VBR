@@ -117,6 +117,23 @@ fn transpile_statement(stmt: &Statement, indent: usize) -> String {
                 .join(", ");
             let mut output = format!("fn {}({}){}{} {{\n", name, param_str, return_str, indent_str);
             for stmt in body {
+fn transpile_pattern(pat: &Pattern, indent: usize) -> String {
+    match pat {
+        Pattern::Literal(expr) => transpile_expr(expr, indent),
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Variable(name) => name.clone(),
+        Pattern::Tuple(elements) => {
+            let elements_str: Vec<String> = elements.iter().map(|e| transpile_pattern(e, indent)).collect();
+            format!("({})", elements_str.join(", "))
+        }
+        Pattern::Struct { name, fields } => {
+            let fields_str: Vec<String> = fields.iter()
+                .map(|(fname, pat)| format!("{}: {}", fname, transpile_pattern(pat, indent)))
+                .collect();
+            format!("{} {{ {} }}", name, fields_str.join(", "))
+        }
+    }
+}
 fn transpile_iterator_method(func: &Expression, args: &[Expression], indent: usize) -> String {
     let method_name = match func {
         Expression::FieldAccess { field, .. } => field,
@@ -154,6 +171,24 @@ fn transpile_iterator_method(func: &Expression, args: &[Expression], indent: usi
             format!("{} {};", indent_str, transpile_expr(e, indent))
         }
         Statement::Match { value, arms } => {
+            let indent_str = "    ".repeat(indent);
+            let value_str = transpile_expr(value, indent);
+            let arms_str: Vec<String> = arms.iter()
+                .map(|arm| {
+                    let pattern_str = transpile_pattern(&arm.pattern, indent);
+                    let guard_str = match &arm.guard {
+                        Some(guard) => format!(" if {}", transpile_expr(guard, indent)),
+                        None => String::new(),
+                    };
+                    let body_str: Vec<String> = arm.body.iter()
+                        .map(|stmt| transpile_statement(stmt, indent + 1))
+                        .collect();
+                    format!("{} => {}{}{}", pattern_str, indent_str.repeat(1), guard_str, body_str.join("") )
+                })
+                .collect::<Vec<_>>()
+                .join(",\n");
+            format!("{}match {} {{\n{}  }}\n", indent_str, value_str, arms_str)
+        }
             format!("{}match {{:?}} {{\n{}\n{}}}", indent_str, value, indent_str)
         }
         Statement::Try(e) => {

@@ -221,29 +221,92 @@ impl Parser {
         Ok(Statement::Select { value: Box::new(value), arms, else_arm: None })
     }
 
-    fn parse_match(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // Match
-        let value = if self.current() == &Token::LParen {
-            self.advance();
-            let expr = self.parse_expr()?;
-            self.expect(Token::RParen)?;
-            expr
-        } else {
-            self.parse_expr()?
-        };
-
-        let mut arms = Vec::new();
-        while self.current() != &Token::End {
-            self.advance();
-            let pattern = self.parse_expr()?;
-            self.expect(Token::Then)?;
-            let body = self.parse_block()?;
-            arms.push(MatchArm { pattern, body });
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        match self.current() {
+            Token::Ident(name) if name == "_" => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            }
+            Token::Ident(name) => {
+                let name = name.clone();
+                self.advance();
+                Ok(Pattern::Variable(name))
+            }
+            Token::Integer | Token::Long | Token::Single | Token::Double | 
+            Token::Boolean | Token::Byte | Token::StringType | Token::Null | Token::Nothing => {
+                let expr = self.parse_expr()?;
+                Ok(Pattern::Literal(expr))
+            }
+            Token::LParen => {
+                self.advance();
+                let mut elements = Vec::new();
+                if self.current() != &Token::RParen {
+                    elements.push(self.parse_pattern()?);
+                    while self.current() == &Token::Comma {
+                        self.advance();
+                        elements.push(self.parse_pattern()?);
+                    }
+                }
+                self.expect(Token::RParen)?;
+                Ok(Pattern::Tuple(elements))
+            }
+            Token::Ident(_) => {
+                let struct_name = match self.current() {
+                    Token::Ident(n) => { let n = n.clone(); self.advance(); n },
+                    _ => return Err(ParseError { message: format!("Expected struct name"), line: 0 }),
+                };
+                if self.current() != &Token::LBrace {
+                    return Err(ParseError { message: format!("Expected LBrace after struct name"), line: 0 })
+                }
+                self.advance(); // consume LBrace
+                let mut fields = Vec::new();
+                if self.current() != &Token::RBrace {
+                    let field_name = match self.current() {
+                        Token::Ident(n) => { let n = n.clone(); self.advance(); n },
+                        _ => return Err(ParseError { message: format!("Expected field name"), line: 0 }),
+                    };
+                    self.expect(Token::Colon)?;
+                    let pattern = self.parse_pattern()?;
+                    fields.push((field_name, pattern));
+                    while self.current() == &Token::Comma {
+                        self.advance();
+                        let field_name = match self.current() {
+                            Token::Ident(n) => { let n = n.clone(); self.advance(); n },
+                            _ => return Err(ParseError { message: format!("Expected field name"), line: 0 }),
+                        };
+                        self.expect(Token::Colon)?;
+                        let pattern = self.parse_pattern()?;
+                        fields.push((field_name, pattern));
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                Ok(Pattern::Struct { name: struct_name, fields })
+            }
+            _ => Err(ParseError { message: format!("Expected pattern, found {:?}", self.current()), line: 0 }),
         }
-        self.expect(Token::End)?;
-        Ok(Statement::Match { value: Box::new(value), arms })
     }
 
+    fn parse_match(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // Match
+        let value = Box::new(self.parse_expr()?);
+        self.expect(Token::LBrace)?;
+        let mut arms = Vec::new();
+        while self.current() != &Token::RBrace {
+            let pattern = self.parse_pattern()?;
+            let guard = if self.current() == &Token::If {
+                self.advance();
+                Some(Box::new(self.parse_expr()?))
+            } else { None };
+            self.expect(Token::Then)?;
+            let body = self.parse_block()?;
+            arms.push(MatchArm { pattern, guard, body });
+            if self.current() == &Token::Comma {
+                self.advance();
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(Statement::Match { value, arms })
+    }
     fn parse_for(&mut self) -> Result<Statement, ParseError> {
         self.advance(); // For
         let variable = match self.current() {
