@@ -34,6 +34,8 @@ pub enum ControlKind {
     Group,
     ProgressBar,
     StatusBar,
+    Image,
+    Svg,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +69,12 @@ pub struct ParsedControl {
     pub options: Vec<String>,
     /// OnChange := HandlerName
     pub on_change: Option<String>,
+    /// Source path (Image, Svg)
+    pub source: Option<String>,
+    /// Display width in pixels (Image, Svg)
+    pub width: Option<f32>,
+    /// Display height in pixels (Image, Svg)
+    pub height: Option<f32>,
     /// Group title or Row align
     pub extra: Option<String>,
     /// Nested controls (Group, Row)
@@ -86,6 +94,9 @@ impl ParsedControl {
             max_length: None,
             multi_line: false,
             view_height: None,
+            source: None,
+            width: None,
+            height: None,
             min: None,
             max: None,
             is_int: true,
@@ -110,6 +121,9 @@ impl ParsedControl {
             "MaxLength"   => { if let Ok(n) = value.parse::<u32>() { self.max_length = Some(n); } }
             "MultiLine"   => { self.multi_line = value.eq_ignore_ascii_case("true"); }
             "ViewHeight"  => { if let Ok(n) = value.parse::<u32>() { self.view_height = Some(n); } }
+            "Source"      => self.source = Some(stripped),
+            "Width"       => { if let Ok(n) = value.parse::<f32>() { self.width = Some(n); } }
+            "Height"      => { if let Ok(n) = value.parse::<f32>() { self.height = Some(n); } }
             "Min" => {
                 if let Ok(n) = value.parse::<f64>() {
                     self.min = Some(n);
@@ -385,6 +399,21 @@ fn parse_form_body(lines: &[&str]) -> Result<Vec<ParsedControl>, String> {
             continue;
         }
 
+        // Image / Svg — support inline path or Source property
+        for (prefix, kind) in [("Image ", ControlKind::Image), ("Svg ", ControlKind::Svg)] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                push_current(&mut stack, &mut current);
+                let mut c = ParsedControl::new(kind);
+                c.source = Some(strip_quotes(rest.trim()));
+                current = Some(c);
+                // handled — break out of inner loop; continue outer
+            }
+        }
+        if matches!(current, Some(ref c) if matches!(c.kind, ControlKind::Image | ControlKind::Svg))
+            && trimmed.contains(' ') {
+            continue;
+        }
+
         // Bare control keywords
         let kind = match trimmed {
             "TextBox"    => Some(ControlKind::TextBox),
@@ -394,6 +423,8 @@ fn parse_form_body(lines: &[&str]) -> Result<Vec<ParsedControl>, String> {
             "DropDown"   => Some(ControlKind::DropDown),
             "ProgressBar"=> Some(ControlKind::ProgressBar),
             "StatusBar"  => Some(ControlKind::StatusBar),
+            "Image"      => Some(ControlKind::Image),
+            "Svg"        => Some(ControlKind::Svg),
             _ => None,
         };
         if let Some(k) = kind {
@@ -940,6 +971,28 @@ fn emit_control(out: &mut String, ctrl: &ParsedControl, depth: usize) {
             out.push_str(&format!(
                 "{}.add(Control::StatusBar(StatusBarDef::new(\"{}\")))\n",
                 pad, binding
+            ));
+        }
+
+        ControlKind::Image => {
+            let source = ctrl.source.as_deref().unwrap_or("");
+            let mut suffix = String::new();
+            if let Some(w) = ctrl.width  { suffix.push_str(&format!(".width({}_f32)", w)); }
+            if let Some(h) = ctrl.height { suffix.push_str(&format!(".height({}_f32)", h)); }
+            out.push_str(&format!(
+                "{}.add(Control::Image(ImageDef::new(\"{}\"){}))\n",
+                pad, source, suffix
+            ));
+        }
+
+        ControlKind::Svg => {
+            let source = ctrl.source.as_deref().unwrap_or("");
+            let mut suffix = String::new();
+            if let Some(w) = ctrl.width  { suffix.push_str(&format!(".width({}_f32)", w)); }
+            if let Some(h) = ctrl.height { suffix.push_str(&format!(".height({}_f32)", h)); }
+            out.push_str(&format!(
+                "{}.add(Control::Svg(SvgDef::new(\"{}\"){}))\n",
+                pad, source, suffix
             ));
         }
     }

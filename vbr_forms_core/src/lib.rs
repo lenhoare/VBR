@@ -243,6 +243,36 @@ impl StatusBarDef {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ImageDef {
+    pub source: String,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+}
+
+impl ImageDef {
+    pub fn new(source: impl Into<String>) -> Self {
+        ImageDef { source: source.into(), width: None, height: None }
+    }
+    pub fn width(mut self, w: f32) -> Self { self.width = Some(w); self }
+    pub fn height(mut self, h: f32) -> Self { self.height = Some(h); self }
+}
+
+#[derive(Debug, Clone)]
+pub struct SvgDef {
+    pub source: String,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+}
+
+impl SvgDef {
+    pub fn new(source: impl Into<String>) -> Self {
+        SvgDef { source: source.into(), width: None, height: None }
+    }
+    pub fn width(mut self, w: f32) -> Self { self.width = Some(w); self }
+    pub fn height(mut self, h: f32) -> Self { self.height = Some(h); self }
+}
+
 // ---------------------------------------------------------------------------
 // Control enum — the complete V1 control set
 // ---------------------------------------------------------------------------
@@ -261,6 +291,8 @@ pub enum Control {
     Group(GroupDef),
     ProgressBar(ProgressBarDef),
     StatusBar(StatusBarDef),
+    Image(ImageDef),
+    Svg(SvgDef),
 }
 
 // ---------------------------------------------------------------------------

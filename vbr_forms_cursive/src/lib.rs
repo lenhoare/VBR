@@ -582,6 +582,14 @@ fn build_controls(
                         .full_width(),
                 );
             }
+
+            Control::Image(def) => {
+                layout.add_child(TextView::new(format!("[Image: {}]", def.source)));
+            }
+
+            Control::Svg(def) => {
+                layout.add_child(TextView::new(format!("[SVG: {}]", def.source)));
+            }
         }
     }
 

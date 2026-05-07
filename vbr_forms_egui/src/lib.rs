@@ -21,6 +21,9 @@ use vbr_forms_core::{
     FormBackend, FormData, FormDef, LabelStyle, RowAlign,
 };
 
+// egui_extras provides raster image and SVG loaders (file:// + bytes://)
+use egui_extras;
+
 // ---------------------------------------------------------------------------
 // Public backend entry point
 // ---------------------------------------------------------------------------
@@ -43,7 +46,11 @@ impl FormBackend for EguiBackend {
         eframe::run_native(
             &title,
             options,
-            Box::new(|_cc| Ok(Box::new(VbrApp::new(def, data, events)))),
+            Box::new(|cc| {
+                // Register loaders for PNG/JPG/GIF (image feature) and SVG (svg feature)
+                egui_extras::install_image_loaders(&cc.egui_ctx);
+                Ok(Box::new(VbrApp::new(def, data, events)))
+            }),
         )
         .map_err(|e| e.to_string())
     }
@@ -420,12 +427,56 @@ fn render_control(
             ui.label(RichText::new(text).strong());
             false
         }
+
+        // --- Image -----------------------------------------------------------
+        Control::Image(def) => {
+            // Resolve to a file:// URI so egui_extras can locate it.
+            // Relative paths are resolved from the working directory.
+            let uri = to_file_uri(&def.source);
+            let img = size_image(egui::Image::new(uri), def.width, def.height);
+            ui.add(img);
+            false
+        }
+
+        // --- Svg -------------------------------------------------------------
+        Control::Svg(def) => {
+            let uri = to_file_uri(&def.source);
+            let img = size_image(egui::Image::new(uri), def.width, def.height);
+            ui.add(img);
+            false
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Convert a source path to a file:// URI, resolving relative paths.
+fn to_file_uri(source: &str) -> String {
+    if source.starts_with("file://") || source.starts_with("http") {
+        return source.to_string();
+    }
+    let path = std::path::Path::new(source);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+    };
+    format!("file://{}", absolute.display())
+}
+
+/// Apply optional width/height constraints to an Image, preserving aspect ratio.
+fn size_image(img: egui::Image<'static>, width: Option<f32>, height: Option<f32>) -> egui::Image<'static> {
+    match (width, height) {
+        (Some(w), Some(h)) => img.max_size(egui::vec2(w, h)),
+        (Some(w), None)    => img.max_width(w),
+        (None, Some(h))    => img.max_height(h),
+        (None, None)       => img,
+    }
+}
 
 fn styled_button(ui: &mut egui::Ui, text: &str, style: &ButtonStyle) -> egui::Response {
     match style {
