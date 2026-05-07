@@ -1,0 +1,13 @@
+[package]
+name = "vbr_forms_cursive"
+version = "0.1.0"
+edition = "2021"
+description = "VBR Forms — TUI backend via cursive"
+license = "MIT"
+
+[dependencies]
+vbr_forms_core = { path = "../vbr_forms_core" }
+cursive = { version = "0.21", default-features = true }
+
+[[example]]
+name = "settings"

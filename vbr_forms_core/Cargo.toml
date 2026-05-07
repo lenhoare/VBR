@@ -1,0 +1,8 @@
+[package]
+name = "vbr_forms_core"
+version = "0.1.0"
+edition = "2021"
+description = "VBR Forms — framework-agnostic trait definitions"
+license = "MIT"
+
+[dependencies]
