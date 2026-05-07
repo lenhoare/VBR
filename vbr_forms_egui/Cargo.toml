@@ -1,0 +1,8 @@
+[package]
+name = "vbr_forms_egui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vbr_forms_core = { path = "../vbr_forms_core" }
+eframe = { version = "0.29", default-features = true }

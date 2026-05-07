@@ -4,6 +4,7 @@ members = [
     "vbr_stdlib",
     "vbr_forms_core",
     "vbr_forms_cursive",
+    "vbr_forms_egui",
 ]
 
 [package]
