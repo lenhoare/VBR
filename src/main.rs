@@ -5,21 +5,64 @@ mod form_parser;
 
 use std::env;
 use std::fs;
+use std::path::Path;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <input.vb>", args[0]);
-        std::process::exit(1);
+    let raw: Vec<String> = env::args().collect();
+
+    // Parse --target <value> flag; everything else is positional.
+    let mut target = "cursive".to_string();
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < raw.len() {
+        if raw[i] == "--target" && i + 1 < raw.len() {
+            target = raw[i + 1].clone();
+            i += 2;
+        } else {
+            positional.push(raw[i].clone());
+            i += 1;
+        }
     }
 
-    let input = fs::read_to_string(&args[1])
-        .unwrap_or_else(|_| panic!("Cannot read file: {}", args[1]));
+    if positional.len() != 1 {
+        eprintln!("Usage: {} [--target cursive|egui|web] <input.vb>", raw[0]);
+        std::process::exit(1);
+    }
+    let input_path = &positional[0];
 
-    // If the file contains a Form block, use the form transpiler.
-    // Otherwise fall back to the simple line-by-line transpiler.
+    let input = fs::read_to_string(input_path)
+        .unwrap_or_else(|_| panic!("Cannot read file: {}", input_path));
+
+    if target == "web" {
+        // Web target: emit two files next to the source.
+        if !contains_form_block(&input) {
+            eprintln!("✘ --target web requires a Form block");
+            std::process::exit(1);
+        }
+        match form_parser::transpile_web_form_file(&input) {
+            Ok((rust_code, json_layout)) => {
+                let stem = Path::new(input_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("form");
+                let dir = Path::new(input_path).parent().unwrap_or(Path::new("."));
+                let rs_path  = dir.join(format!("{}.wasm.rs", stem));
+                let json_path = dir.join(format!("{}.layout.json", stem));
+                fs::write(&rs_path, &rust_code).expect("write .wasm.rs");
+                fs::write(&json_path, &json_layout).expect("write .layout.json");
+                eprintln!("Generated {} and {}", rs_path.display(), json_path.display());
+            }
+            Err(e) => {
+                eprintln!("✘ {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // TUI / egui targets — print to stdout.
     let result = if contains_form_block(&input) {
-        form_parser::transpile_form_file(&input)
+        form_parser::transpile_form_file(&input, &target)
     } else {
         transpile_simple(&input)
     };

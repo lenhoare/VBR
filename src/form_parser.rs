@@ -75,6 +75,8 @@ pub struct ParsedControl {
     pub width: Option<f32>,
     /// Display height in pixels (Image, Svg)
     pub height: Option<f32>,
+    /// Name := identifier — gives a control a reference-able id for web target
+    pub name: Option<String>,
     /// Group title or Row align
     pub extra: Option<String>,
     /// Nested controls (Group, Row)
@@ -102,6 +104,7 @@ impl ParsedControl {
             is_int: true,
             options: Vec::new(),
             on_change: None,
+            name: None,
             extra: None,
             children: Vec::new(),
         }
@@ -139,6 +142,7 @@ impl ParsedControl {
             "Options" => self.options = parse_options_list(value),
             "Align"   => self.extra = Some(value.to_string()),
             "Title"   => self.extra = Some(stripped),
+            "Name"    => self.name = Some(value.to_string()),
             _ => {}
         }
     }
@@ -608,7 +612,7 @@ fn add_handler(c: &mut Collected, name: &str, value_kind: Option<BindingKind>) {
 // Code generator
 // ---------------------------------------------------------------------------
 
-pub fn transpile_form_file(input: &str) -> Result<String, String> {
+pub fn transpile_form_file(input: &str, target: &str) -> Result<String, String> {
     let (forms, functions) = collect_blocks(input)?;
     if forms.is_empty() {
         return Err("No Form block found".to_string());
@@ -624,7 +628,11 @@ pub fn transpile_form_file(input: &str) -> Result<String, String> {
     out.push_str("// Edit the handler function bodies below.\n\n");
     out.push_str("use std::sync::{Arc, Mutex};\n");
     out.push_str("use vbr_forms_core::*;\n");
-    out.push_str("use vbr_forms_cursive::CursiveBackend;\n\n");
+    let (backend_use, backend_name) = match target {
+        "egui" => ("use vbr_forms_egui::EguiBackend;\n\n", "EguiBackend"),
+        _      => ("use vbr_forms_cursive::CursiveBackend;\n\n", "CursiveBackend"),
+    };
+    out.push_str(backend_use);
 
     // --- Data struct ---
     out.push_str(&format!("// Generated from Form \"{}\"\n", form.title));
@@ -796,8 +804,8 @@ pub fn transpile_form_file(input: &str) -> Result<String, String> {
         struct_name
     ));
     out.push_str(&format!(
-        "    CursiveBackend::run(\n        {}(),\n        data as Arc<Mutex<dyn FormData>>,\n        handlers as Arc<Mutex<dyn EventDispatch>>,\n    ).unwrap();\n",
-        builder_name
+        "    {}::run(\n        {}(),\n        data as Arc<Mutex<dyn FormData>>,\n        handlers as Arc<Mutex<dyn EventDispatch>>,\n    ).unwrap();\n",
+        backend_name, builder_name
     ));
     out.push_str("}\n");
 
@@ -1155,4 +1163,621 @@ fn transpile_expr_simple(expr: &str) -> String {
         .replace("Not ", "!")
         .replace("True", "true")
         .replace("False", "false")
+}
+
+// ===========================================================================
+// Web / WASM transpiler
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Named control info — Label or Button controls with Name := id
+// ---------------------------------------------------------------------------
+
+struct NamedCtrl {
+    /// snake_case identifier used in struct fields and snapshot
+    id: String,
+    /// Original camelCase name from Name := property
+    vbr_name: String,
+    /// Initial caption text
+    initial_caption: String,
+}
+
+fn collect_named_ctrls(controls: &[ParsedControl]) -> Vec<NamedCtrl> {
+    let mut out = Vec::new();
+    collect_named_recursive(controls, &mut out);
+    out
+}
+
+fn collect_named_recursive(controls: &[ParsedControl], out: &mut Vec<NamedCtrl>) {
+    for ctrl in controls {
+        if let Some(ref name) = ctrl.name {
+            match ctrl.kind {
+                ControlKind::Label | ControlKind::Button => {
+                    let initial = ctrl.text.as_deref()
+                        .or(ctrl.label.as_deref())
+                        .unwrap_or("")
+                        .to_string();
+                    out.push(NamedCtrl {
+                        id: camel_to_snake(name),
+                        vbr_name: name.clone(),
+                        initial_caption: initial,
+                    });
+                }
+                _ => {}
+            }
+        }
+        match ctrl.kind {
+            ControlKind::Group | ControlKind::Row => {
+                collect_named_recursive(&ctrl.children, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Generate (wasm_rust_source, json_layout) for `--target web`.
+pub fn transpile_web_form_file(input: &str) -> Result<(String, String), String> {
+    let (forms, functions) = collect_blocks(input)?;
+    if forms.is_empty() {
+        return Err("No Form block found".to_string());
+    }
+    let form = &forms[0];
+    let meta = collect_metadata(&form.controls);
+    let named = collect_named_ctrls(&form.controls);
+    let struct_name = to_pascal_case(&form.title);
+
+    let rust = emit_wasm_rust(form, &functions, &meta, &named, &struct_name);
+    let json = emit_layout_json(form);
+    Ok((rust, json))
+}
+
+// ---------------------------------------------------------------------------
+// WASM Rust emitter
+// ---------------------------------------------------------------------------
+
+fn emit_wasm_rust(
+    _form: &ParsedForm,
+    functions: &[ParsedFunction],
+    meta: &Collected,
+    named: &[NamedCtrl],
+    struct_name: &str,
+) -> String {
+    let mut out = String::new();
+
+    out.push_str("// Generated by VBR transpiler — web/WASM target\n");
+    out.push_str("//\n");
+    out.push_str("// Build with: wasm-pack build --target bundler\n");
+    out.push_str("//\n");
+    out.push_str("// Required Cargo.toml additions:\n");
+    out.push_str("//   [lib]\n");
+    out.push_str("//   crate-type = [\"cdylib\"]\n");
+    out.push_str("//   [dependencies]\n");
+    out.push_str("//   vbr_forms_web    = { path = \"../vbr_forms_web\" }\n");
+    out.push_str("//   wasm-bindgen     = \"0.2\"\n");
+    out.push_str("//   serde-wasm-bindgen = \"0.6\"\n\n");
+
+    out.push_str("use wasm_bindgen::prelude::*;\n");
+    out.push_str("use vbr_forms_web::{FormSnapshot, ControlState};\n\n");
+
+    // --- Struct definition ---
+    out.push_str("#[wasm_bindgen]\n");
+    out.push_str(&format!("pub struct {} {{\n", struct_name));
+    for b in &meta.bindings {
+        let rust_type = match b.kind {
+            BindingKind::Text        => "String",
+            BindingKind::NumberInt   => "i64",
+            BindingKind::NumberFloat => "f64",
+            BindingKind::Bool        => "bool",
+            BindingKind::Progress    => "f32",
+        };
+        out.push_str(&format!("    {}: {},\n", b.snake, rust_type));
+    }
+    for nc in named {
+        out.push_str(&format!("    {}_visible: bool,\n", nc.id));
+        out.push_str(&format!("    {}_caption: String,\n", nc.id));
+    }
+    out.push_str("}\n\n");
+
+    // --- impl block ---
+    out.push_str("#[wasm_bindgen]\n");
+    out.push_str(&format!("impl {} {{\n", struct_name));
+
+    // constructor
+    out.push_str("    #[wasm_bindgen(constructor)]\n");
+    out.push_str("    pub fn new() -> Self {\n");
+    out.push_str(&format!("        {} {{\n", struct_name));
+    for b in &meta.bindings {
+        let init = match b.kind {
+            BindingKind::Text        => "String::new()".to_string(),
+            BindingKind::NumberInt   => "0".to_string(),
+            BindingKind::NumberFloat => "0.0".to_string(),
+            BindingKind::Bool        => "false".to_string(),
+            BindingKind::Progress    => "0.0".to_string(),
+        };
+        out.push_str(&format!("            {}: {},\n", b.snake, init));
+    }
+    for nc in named {
+        out.push_str(&format!("            {}_visible: true,\n", nc.id));
+        out.push_str(&format!("            {}_caption: \"{}\".to_string(),\n", nc.id, escape_json_str(&nc.initial_caption)));
+    }
+    out.push_str("        }\n    }\n\n");
+
+    // initial_snapshot
+    out.push_str("    pub fn initial_snapshot(&self) -> JsValue {\n");
+    out.push_str("        serde_wasm_bindgen::to_value(&self.snapshot()).unwrap()\n");
+    out.push_str("    }\n\n");
+
+    // event handler methods
+    let fn_map: std::collections::HashMap<&str, &ParsedFunction> =
+        functions.iter().map(|f| (f.name.as_str(), f)).collect();
+
+    for h in &meta.handlers {
+        let param = match &h.value_kind {
+            Some(BindingKind::Text)                    => ", value: String",
+            Some(BindingKind::NumberInt)               => ", value: f64",
+            Some(BindingKind::NumberFloat)             => ", value: f64",
+            Some(BindingKind::Bool)                    => ", value: bool",
+            Some(BindingKind::Progress)                => ", value: f32",
+            None                                       => "",
+        };
+        out.push_str(&format!(
+            "    pub fn {}(&mut self{}) -> JsValue {{\n",
+            h.fn_name, param
+        ));
+        if let Some(vbr_fn) = fn_map.get(h.vbr_name.as_str()) {
+            let body = transpile_web_fn_body(
+                &vbr_fn.body_lines,
+                &meta.bindings,
+                named,
+                h.value_kind.as_ref(),
+            );
+            out.push_str(&body);
+        }
+        out.push_str("        serde_wasm_bindgen::to_value(&self.snapshot()).unwrap()\n");
+        out.push_str("    }\n\n");
+    }
+
+    // private snapshot()
+    out.push_str("    fn snapshot(&self) -> FormSnapshot {\n");
+    out.push_str("        FormSnapshot {\n");
+    out.push_str("            controls: vec![\n");
+    for b in &meta.bindings {
+        let val = match b.kind {
+            BindingKind::Text        => format!("self.{}.clone()", b.snake),
+            BindingKind::NumberInt   => format!("self.{}.to_string()", b.snake),
+            BindingKind::NumberFloat => format!("self.{}.to_string()", b.snake),
+            BindingKind::Bool        => format!("self.{}.to_string()", b.snake),
+            BindingKind::Progress    => format!("self.{}.to_string()", b.snake),
+        };
+        out.push_str(&format!(
+            "                ControlState {{ id: \"{id}\".to_string(), value: {val}, caption: None, visible: true, enabled: true, error: None }},\n",
+            id = b.snake, val = val
+        ));
+    }
+    for nc in named {
+        out.push_str(&format!(
+            "                ControlState {{ id: \"{id}\".to_string(), value: String::new(), caption: Some(self.{id}_caption.clone()), visible: self.{id}_visible, enabled: true, error: None }},\n",
+            id = nc.id
+        ));
+    }
+    out.push_str("            ],\n        }\n    }\n}\n");
+
+    out
+}
+
+// ---------------------------------------------------------------------------
+// JSON layout emitter
+// ---------------------------------------------------------------------------
+
+fn escape_json_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn emit_layout_json(form: &ParsedForm) -> String {
+    let mut out = String::new();
+    let mut counter = 0usize;
+    out.push_str("{\n");
+    out.push_str(&format!("  \"title\": \"{}\",\n", escape_json_str(&form.title)));
+    out.push_str("  \"controls\": [\n");
+    let n = form.controls.len();
+    for (i, ctrl) in form.controls.iter().enumerate() {
+        emit_layout_ctrl_json(&mut out, ctrl, 4, i == n - 1, &mut counter);
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+fn emit_layout_ctrl_json(
+    out: &mut String,
+    ctrl: &ParsedControl,
+    indent: usize,
+    is_last: bool,
+    counter: &mut usize,
+) {
+    let pad = " ".repeat(indent);
+    let end = if is_last { "" } else { "," };
+
+    match ctrl.kind {
+        ControlKind::Separator => {
+            out.push_str(&format!("{}{{ \"type\": \"Separator\" }}{}\n", pad, end));
+        }
+
+        ControlKind::Label => {
+            let text = ctrl.text.as_deref().or(ctrl.label.as_deref()).unwrap_or("");
+            let id = ctrl.name.as_ref()
+                .map(|n| camel_to_snake(n))
+                .unwrap_or_else(|| { *counter += 1; format!("label_{}", counter) });
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"Label\""),
+                format!("\"text\": \"{}\"", escape_json_str(text)),
+            ];
+            if let Some(ref s) = ctrl.style {
+                f.push(format!("\"style\": \"{}\"", s));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::TextBox => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"TextBox\""),
+                format!("\"label\": \"{}\"", escape_json_str(ctrl.label.as_deref().unwrap_or(""))),
+            ];
+            if ctrl.multi_line { f.push("\"multiLine\": true".to_string()); }
+            if let Some(n) = ctrl.view_height { f.push(format!("\"viewHeight\": {}", n)); }
+            if let Some(ref p) = ctrl.placeholder { f.push(format!("\"placeholder\": \"{}\"", escape_json_str(p))); }
+            if let Some(ref h) = ctrl.on_change {
+                f.push(format!("\"events\": {{ \"onChange\": \"{}\" }}", handler_fn_name(h)));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::NumberBox => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"NumberBox\""),
+                format!("\"label\": \"{}\"", escape_json_str(ctrl.label.as_deref().unwrap_or(""))),
+            ];
+            if let Some(v) = ctrl.min { f.push(format!("\"min\": {}", v)); }
+            if let Some(v) = ctrl.max { f.push(format!("\"max\": {}", v)); }
+            if let Some(ref h) = ctrl.on_change {
+                f.push(format!("\"events\": {{ \"onChange\": \"{}\" }}", handler_fn_name(h)));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::CheckBox => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"CheckBox\""),
+                format!("\"label\": \"{}\"", escape_json_str(ctrl.label.as_deref().unwrap_or(""))),
+            ];
+            if let Some(ref h) = ctrl.on_change {
+                f.push(format!("\"events\": {{ \"onChange\": \"{}\" }}", handler_fn_name(h)));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::RadioGroup => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let opts = ctrl.options.iter()
+                .map(|o| format!("\"{}\"", escape_json_str(o)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"RadioGroup\""),
+                format!("\"label\": \"{}\"", escape_json_str(ctrl.label.as_deref().unwrap_or(""))),
+                format!("\"options\": [{}]", opts),
+            ];
+            if let Some(ref h) = ctrl.on_change {
+                f.push(format!("\"events\": {{ \"onChange\": \"{}\" }}", handler_fn_name(h)));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::DropDown => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let opts = ctrl.options.iter()
+                .map(|o| format!("\"{}\"", escape_json_str(o)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"DropDown\""),
+                format!("\"label\": \"{}\"", escape_json_str(ctrl.label.as_deref().unwrap_or(""))),
+                format!("\"options\": [{}]", opts),
+            ];
+            if let Some(ref h) = ctrl.on_change {
+                f.push(format!("\"events\": {{ \"onChange\": \"{}\" }}", handler_fn_name(h)));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::Button => {
+            let id = ctrl.name.as_ref()
+                .map(|n| camel_to_snake(n))
+                .or_else(|| ctrl.on_click.as_ref().map(|h| handler_fn_name(h)))
+                .unwrap_or_default();
+            let text = ctrl.text.as_deref().or(ctrl.label.as_deref()).unwrap_or("");
+            let mut f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"Button\""),
+                format!("\"text\": \"{}\"", escape_json_str(text)),
+            ];
+            if let Some(ref s) = ctrl.style {
+                f.push(format!("\"style\": \"{}\"", s));
+            }
+            if let Some(ref h) = ctrl.on_click {
+                f.push(format!("\"events\": {{ \"onClick\": \"{}\" }}", handler_fn_name(h)));
+            }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::Row => {
+            let align = ctrl.extra.as_deref().unwrap_or("Left");
+            out.push_str(&format!("{}{{\n", pad));
+            out.push_str(&format!("{}  \"type\": \"Row\",\n", pad));
+            out.push_str(&format!("{}  \"align\": \"{}\",\n", pad, align));
+            out.push_str(&format!("{}  \"controls\": [\n", pad));
+            let nc = ctrl.children.len();
+            for (ci, child) in ctrl.children.iter().enumerate() {
+                emit_layout_ctrl_json(out, child, indent + 4, ci == nc - 1, counter);
+            }
+            out.push_str(&format!("{}  ]\n", pad));
+            out.push_str(&format!("{}}}{}\n", pad, end));
+        }
+
+        ControlKind::Group => {
+            let title = ctrl.extra.as_deref().unwrap_or("");
+            out.push_str(&format!("{}{{\n", pad));
+            out.push_str(&format!("{}  \"type\": \"Group\",\n", pad));
+            out.push_str(&format!("{}  \"title\": \"{}\",\n", pad, escape_json_str(title)));
+            out.push_str(&format!("{}  \"controls\": [\n", pad));
+            let nc = ctrl.children.len();
+            for (ci, child) in ctrl.children.iter().enumerate() {
+                emit_layout_ctrl_json(out, child, indent + 4, ci == nc - 1, counter);
+            }
+            out.push_str(&format!("{}  ]\n", pad));
+            out.push_str(&format!("{}}}{}\n", pad, end));
+        }
+
+        ControlKind::ProgressBar => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"ProgressBar\""),
+                format!("\"label\": \"{}\"", escape_json_str(ctrl.label.as_deref().unwrap_or(""))),
+            ];
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::StatusBar => {
+            let id = ctrl.binding.as_deref().map(camel_to_snake).unwrap_or_default();
+            let f: Vec<String> = vec![
+                format!("\"id\": \"{}\"", id),
+                format!("\"type\": \"StatusBar\""),
+            ];
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::Image => {
+            let mut f: Vec<String> = vec![
+                format!("\"type\": \"Image\""),
+                format!("\"source\": \"{}\"", escape_json_str(ctrl.source.as_deref().unwrap_or(""))),
+            ];
+            if let Some(w) = ctrl.width  { f.push(format!("\"width\": {}", w)); }
+            if let Some(h) = ctrl.height { f.push(format!("\"height\": {}", h)); }
+            emit_json_fields(out, &pad, &f, end);
+        }
+
+        ControlKind::Svg => {
+            let mut f: Vec<String> = vec![
+                format!("\"type\": \"Svg\""),
+                format!("\"source\": \"{}\"", escape_json_str(ctrl.source.as_deref().unwrap_or(""))),
+            ];
+            if let Some(w) = ctrl.width  { f.push(format!("\"width\": {}", w)); }
+            if let Some(h) = ctrl.height { f.push(format!("\"height\": {}", h)); }
+            emit_json_fields(out, &pad, &f, end);
+        }
+    }
+}
+
+/// Emit a JSON object from a flat field list.
+fn emit_json_fields(out: &mut String, pad: &str, fields: &[String], end: &str) {
+    if fields.is_empty() {
+        out.push_str(&format!("{}{{}}{}\n", pad, end));
+        return;
+    }
+    out.push_str(&format!("{}{{\n", pad));
+    let last = fields.len() - 1;
+    for (i, field) in fields.iter().enumerate() {
+        let comma = if i < last { "," } else { "" };
+        out.push_str(&format!("{}  {}{}\n", pad, field, comma));
+    }
+    out.push_str(&format!("{}}}{}\n", pad, end));
+}
+
+// ---------------------------------------------------------------------------
+// Web function body transpiler
+// ---------------------------------------------------------------------------
+
+fn transpile_web_fn_body(
+    lines: &[String],
+    bindings: &[BindingInfo],
+    named: &[NamedCtrl],
+    value_kind: Option<&BindingKind>,
+) -> String {
+    let mut out = String::new();
+    let mut if_depth = 0usize;
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('\'') { continue; }
+
+        // Base indent: 8 spaces (impl method body = 2 levels)
+        let indent = format!("        {}", "    ".repeat(if_depth));
+
+        if trimmed.eq_ignore_ascii_case("End If") {
+            if if_depth > 0 { if_depth -= 1; }
+            let ci = format!("        {}", "    ".repeat(if_depth));
+            out.push_str(&format!("{}}}\n", ci));
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("Else") {
+            if if_depth > 0 { if_depth -= 1; }
+            let ci = format!("        {}", "    ".repeat(if_depth));
+            out.push_str(&format!("{}}} else {{\n", ci));
+            if_depth += 1;
+            continue;
+        }
+        if trimmed.to_lowercase().starts_with("if ") {
+            if let Some(cond) = extract_if_condition(trimmed) {
+                let cond_rust = web_bool_coerce_expr(&cond, bindings, value_kind);
+                out.push_str(&format!("{}if {} {{\n", indent, cond_rust));
+                if_depth += 1;
+                continue;
+            }
+        }
+        if trimmed.eq_ignore_ascii_case("Exit Function") {
+            out.push_str(&format!("{}return serde_wasm_bindgen::to_value(&self.snapshot()).unwrap();\n", indent));
+            continue;
+        }
+
+        // controlName.Visible = True/False  or  controlName.Caption = "..."
+        if let Some(dot_pos) = trimmed.find('.') {
+            let obj = &trimmed[..dot_pos];
+            let rest = &trimmed[dot_pos + 1..];
+            if let Some(eq_pos) = rest.find(" = ") {
+                let prop = rest[..eq_pos].trim();
+                let val  = rest[eq_pos + 3..].trim();
+                if let Some(nc) = named.iter().find(|n| n.vbr_name == obj) {
+                    match prop {
+                        "Visible" => {
+                            let b = val.eq_ignore_ascii_case("true");
+                            out.push_str(&format!("{}self.{}_visible = {};\n", indent, nc.id, b));
+                            continue;
+                        }
+                        "Caption" | "Text" => {
+                            let stripped = strip_quotes(val);
+                            out.push_str(&format!(
+                                "{}self.{}_caption = \"{}\".to_string();\n",
+                                indent, nc.id, escape_json_str(&stripped)
+                            ));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Binding assignment: fieldName = expr  or  data.fieldName = expr
+        if let Some((lhs, rhs)) = split_assignment(trimmed) {
+            let lhs_bare = lhs.strip_prefix("data.").unwrap_or(&lhs).to_string();
+            if let Some(b) = bindings.iter().find(|b| b.camel == lhs_bare || b.snake == lhs_bare) {
+                let rhs_rust = transpile_web_rhs(&rhs, b, bindings, value_kind);
+                out.push_str(&format!("{}self.{} = {};\n", indent, b.snake, rhs_rust));
+                continue;
+            }
+        }
+
+        out.push_str(&format!("{}// {}\n", indent, trimmed));
+    }
+
+    out
+}
+
+fn web_bool_coerce_expr(expr: &str, bindings: &[BindingInfo], value_kind: Option<&BindingKind>) -> String {
+    let e = expr.trim();
+    if !e.is_empty() && e.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        if e == "value" {
+            return match value_kind {
+                Some(BindingKind::Text)    => "!value.is_empty()".to_string(),
+                Some(BindingKind::NumberInt | BindingKind::NumberFloat) => "value != 0.0".to_string(),
+                _ => e.to_string(),
+            };
+        }
+        if let Some(b) = bindings.iter().find(|b| b.camel == e || b.snake == e) {
+            return match b.kind {
+                BindingKind::Text        => format!("!self.{}.is_empty()", b.snake),
+                BindingKind::NumberInt
+                | BindingKind::NumberFloat => format!("self.{} != 0", b.snake),
+                _ => format!("self.{}", b.snake),
+            };
+        }
+    }
+    transpile_expr_simple(expr)
+}
+
+fn transpile_web_rhs(
+    rhs: &str,
+    binding: &BindingInfo,
+    bindings: &[BindingInfo],
+    value_kind: Option<&BindingKind>,
+) -> String {
+    let rhs = rhs.trim();
+
+    // String concat: "prefix" & fieldName & ...
+    if rhs.contains(" & ") {
+        let parts: Vec<&str> = rhs.split(" & ").collect();
+        let fmt = "{}".repeat(parts.len());
+        let args: String = parts.iter()
+            .map(|p| {
+                let p = p.trim();
+                if p == "value" {
+                    // The handler parameter
+                    format!(", {}", match value_kind {
+                        Some(BindingKind::Text) => "value".to_string(),
+                        _ => "value.to_string()".to_string(),
+                    })
+                } else if let Some(b) = bindings.iter().find(|b| b.camel == p) {
+                    match b.kind {
+                        BindingKind::Text => format!(", self.{}", b.snake),
+                        _ => format!(", self.{}.to_string()", b.snake),
+                    }
+                } else {
+                    format!(", {}", p)
+                }
+            })
+            .collect();
+        return format!("format!(\"{}\"{})", fmt, args);
+    }
+
+    // The `value` handler parameter
+    if rhs == "value" {
+        return match binding.kind {
+            BindingKind::Text        => "value.clone()".to_string(),
+            BindingKind::NumberInt   => "value as i64".to_string(),
+            BindingKind::NumberFloat => "value".to_string(),
+            BindingKind::Bool        => "value".to_string(),
+            BindingKind::Progress    => "value as f32".to_string(),
+        };
+    }
+
+    // String literal
+    if rhs.starts_with('"') && rhs.ends_with('"') {
+        return format!("{}.to_string()", rhs);
+    }
+
+    // Another binding reference
+    if let Some(b) = bindings.iter().find(|b| b.camel == rhs) {
+        return match b.kind {
+            BindingKind::Text => format!("self.{}.clone()", b.snake),
+            _ => format!("self.{}", b.snake),
+        };
+    }
+
+    match binding.kind {
+        BindingKind::Text => format!("{}.to_string()", rhs),
+        _ => rhs.to_string(),
+    }
 }

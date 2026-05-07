@@ -1,0 +1,41 @@
+{
+  "title": "Hello World",
+  "controls": [
+    {
+      "id": "label_1",
+      "type": "Label",
+      "text": "Enter your name and press OK."
+    },
+    {
+      "id": "user_name",
+      "type": "TextBox",
+      "label": "Name:",
+      "placeholder": "e.g. Alice",
+      "events": { "onChange": "name_changed" }
+    },
+    {
+      "type": "Row",
+      "align": "Right",
+      "controls": [
+        {
+          "id": "cancel",
+          "type": "Button",
+          "text": "Cancel",
+          "style": "Danger",
+          "events": { "onClick": "cancel" }
+        },
+        {
+          "id": "ok",
+          "type": "Button",
+          "text": "OK",
+          "style": "Primary",
+          "events": { "onClick": "ok" }
+        }
+      ]
+    },
+    {
+      "id": "status_message",
+      "type": "StatusBar"
+    }
+  ]
+}

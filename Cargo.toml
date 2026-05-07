@@ -5,6 +5,7 @@ members = [
     "vbr_forms_core",
     "vbr_forms_cursive",
     "vbr_forms_egui",
+    "vbr_forms_web",
 ]
 
 [package]

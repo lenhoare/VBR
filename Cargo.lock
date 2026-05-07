@@ -4227,6 +4227,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vbr_forms_web"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "vbr_stdlib"
 version = "0.1.0"
 dependencies = [
